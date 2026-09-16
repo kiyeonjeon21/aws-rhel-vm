@@ -103,6 +103,29 @@ PROFILE
 }
 
 # ---------------------------------------------------------------------------
+# 다음 실행이 실제로 잡혀 있는지 확인한다.
+#
+# systemctl is-enabled 로는 부족하다. 멈춘 타이머도 enabled 로 보인다.
+# Windows 쪽에서 정확히 그 이유로 인스턴스가 37 시간을 돌았다.
+#
+# `systemctl ... | grep -q` 도 쓰지 않는다. grep -q 는 매치하자마자 파이프를
+# 닫고, 앞 명령이 SIGPIPE 로 죽어 pipefail 아래에서 141 이 된다. 멀쩡한
+# 워치독이 실패로 보고된다.
+#
+# 시계가 둘이라는 것도 함정이다. OnBootSec 로 걸린 타이머는 단조 시계를 쓰므로
+# NextElapseUSecRealtime 이 비어 있다. 한쪽만 보면 정상인데도 실패한다.
+timer_has_next_run() {
+  local prop value
+  for prop in NextElapseUSecMonotonic NextElapseUSecRealtime; do
+    value=$(systemctl show idle-shutdown.timer -p "$prop" --value)
+    case "$value" in
+      ''|0|n/a|infinity) continue ;;
+      *) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 step_watchdog_check() {
   # The watchdog itself is installed by cloud-init, because cost protection
   # must not depend on this repository having been cloned. Its schedule is
@@ -113,15 +136,7 @@ step_watchdog_check() {
     systemctl enable --now idle-shutdown.timer
   fi
 
-  # `systemctl ... | grep -q` 를 쓰지 않는다. grep -q 는 매치하자마자 파이프를
-  # 닫고, 그러면 앞 명령이 SIGPIPE 로 죽어 pipefail 아래에서 141 이 된다.
-  # 멀쩡히 동작하는 워치독이 실패로 보고된다.
-  #
-  # 그리고 is-enabled 는 확인하려던 것이 아니다. 멈춘 타이머도 enabled 로
-  # 보인다. 다음 실행 시각이 잡혀 있는지가 진짜 질문이다.
-  local next
-  next=$(systemctl show idle-shutdown.timer -p NextElapseUSecRealtime --value)
-  [ -n "$next" ] && [ "$next" != "0" ] && [ "$next" != "n/a" ]
+  timer_has_next_run
 }
 
 # ---------------------------------------------------------------------------
