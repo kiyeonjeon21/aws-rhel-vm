@@ -144,8 +144,13 @@ write_files:
         # things, and a stopped timer still reports enabled. Ask for the next
         # elapse directly. No pipe: `... | grep -q` closes the pipe on match,
         # the writer dies of SIGPIPE, and pipefail turns that into exit 141.
-        NEXT=$(systemctl show idle-shutdown.timer -p NextElapseUSecRealtime --value)
-        [ -n "$NEXT" ] && [ "$NEXT" != "0" ] && [ "$NEXT" != "n/a" ]
+        # 시계가 둘이다. OnBootSec 로 걸린 타이머는 단조 시계를 쓰므로
+        # Realtime 쪽이 비어 있다. 한쪽만 보면 정상인데도 실패한다.
+        for P in NextElapseUSecMonotonic NextElapseUSecRealtime; do
+          V=$(systemctl show idle-shutdown.timer -p "$P" --value)
+          case "$V" in ''|0|n/a|infinity) continue ;; *) return 0 ;; esac
+        done
+        return 1
       }
 
       step_awscli() {
