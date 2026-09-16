@@ -112,7 +112,16 @@ step_watchdog_check() {
     echo 'idle watchdog timer is not enabled, enabling'
     systemctl enable --now idle-shutdown.timer
   fi
-  systemctl list-timers idle-shutdown.timer --no-pager | grep -q idle-shutdown
+
+  # `systemctl ... | grep -q` 를 쓰지 않는다. grep -q 는 매치하자마자 파이프를
+  # 닫고, 그러면 앞 명령이 SIGPIPE 로 죽어 pipefail 아래에서 141 이 된다.
+  # 멀쩡히 동작하는 워치독이 실패로 보고된다.
+  #
+  # 그리고 is-enabled 는 확인하려던 것이 아니다. 멈춘 타이머도 enabled 로
+  # 보인다. 다음 실행 시각이 잡혀 있는지가 진짜 질문이다.
+  local next
+  next=$(systemctl show idle-shutdown.timer -p NextElapseUSecRealtime --value)
+  [ -n "$next" ] && [ "$next" != "0" ] && [ "$next" != "n/a" ]
 }
 
 # ---------------------------------------------------------------------------

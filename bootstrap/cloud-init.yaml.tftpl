@@ -141,8 +141,11 @@ write_files:
         [ "${idle_shutdown_minutes}" -gt 0 ] || { echo 'idle shutdown disabled'; return 0; }
         systemctl enable --now idle-shutdown.timer
         # Enabling a timer and it actually being scheduled are different
-        # things. Prove the next run exists.
-        systemctl list-timers idle-shutdown.timer --no-pager | grep -q idle-shutdown
+        # things, and a stopped timer still reports enabled. Ask for the next
+        # elapse directly. No pipe: `... | grep -q` closes the pipe on match,
+        # the writer dies of SIGPIPE, and pipefail turns that into exit 141.
+        NEXT=$(systemctl show idle-shutdown.timer -p NextElapseUSecRealtime --value)
+        [ -n "$NEXT" ] && [ "$NEXT" != "0" ] && [ "$NEXT" != "n/a" ]
       }
 
       step_awscli() {
