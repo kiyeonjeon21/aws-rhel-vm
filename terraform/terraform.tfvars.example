@@ -1,0 +1,28 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored.
+
+name   = "rhelvm"
+region = "us-east-1"
+
+instance_type    = "c6i.xlarge"
+root_volume_size = 100
+
+# "9" 는 가장 최근 발행된 RHEL 9, "9.8" 은 그 점 릴리스로 고정.
+rhel_version = "9.8"
+
+ssh_public_key = "ssh-ed25519 AAAA... you@example.com"
+
+# Your own address only. `vm allow-ip` adds your current address later without
+# a terraform run, so this just needs to be right on the day you build.
+allowed_cidrs = ["203.0.113.4/32"]
+
+setup_repo_url = "https://github.com/kiyeonjeon21/aws-rhel-vm.git"
+setup_ref      = "main"
+
+associate_eip = true
+
+idle_shutdown_minutes        = 30
+idle_shutdown_load_threshold = 0.4
+idle_backstop_hours          = 2
+
+budget_alert_email   = ""
+budget_monthly_limit = 50

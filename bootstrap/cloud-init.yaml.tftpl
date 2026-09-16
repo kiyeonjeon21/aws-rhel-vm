@@ -1,0 +1,181 @@
+#cloud-config
+# Rendered by terraform/instance.tf. Runs once, as root, at first boot.
+#
+# Two rules apply when editing this file:
+#   1. Terraform expands its own $${...} and %%{...} sequences before this ever
+#      reaches the instance. Write shell variables as $VAR, never $${VAR}, and
+#      escape a literal one by doubling the sigil as this comment does.
+#   2. Everything SSH depends on happens before anything that reaches the
+#      network, so a failed download can never cost you the way in.
+
+users:
+  - name: ec2-user
+    groups: [wheel]
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - ${ssh_public_key}
+
+write_files:
+  # ---------------------------------------------------------------------
+  # Idle watchdog. Stops the instance after a stretch of no interactive use.
+  #
+  # Written by cloud-init rather than by the repo clone, because cost
+  # protection must not depend on this repository being reachable.
+  # ---------------------------------------------------------------------
+  - path: /usr/local/sbin/idle-shutdown.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      IDLE_LIMIT=${idle_shutdown_minutes}
+      LOAD_LIMIT=${idle_load_threshold}
+      INTERVAL_MIN=5
+      STATE=/var/lib/rhelvm/idle-minutes
+
+      # Never pull the rug out from under first boot while packages install.
+      UPTIME_MIN=$(awk '{print int($1/60)}' /proc/uptime)
+      if [ "$UPTIME_MIN" -lt 15 ]; then exit 0; fi
+
+      mkdir -p "$(dirname "$STATE")"
+
+      # An SSH session shows up as an established connection on port 22.
+      SSH_N=$(ss -Htn state established '( sport = :22 )' 2>/dev/null | wc -l)
+
+      # Session Manager rides an outbound connection, so it is invisible to the
+      # port check above and has to be counted by its agent's child processes.
+      SSM_N=$(pgrep -c -f 'ssm-session-worker' 2>/dev/null || true)
+      SSM_N=$${SSM_N:-0}
+
+      # Load is compared per core so the threshold means the same thing on any
+      # instance size. A long build started over SSH keeps the box alive after
+      # the session drops.
+      CORES=$(nproc)
+      BUSY=$(awk -v l="$(cut -d' ' -f1 /proc/loadavg)" -v c="$CORES" -v t="$LOAD_LIMIT" \
+             'BEGIN { print (l / c >= t) ? 1 : 0 }')
+
+      if [ "$SSH_N" -gt 0 ] || [ "$SSM_N" -gt 0 ] || [ "$BUSY" -eq 1 ]; then
+        echo 0 > "$STATE"
+        exit 0
+      fi
+
+      IDLE=0
+      if [ -r "$STATE" ]; then IDLE=$(cat "$STATE"); fi
+      IDLE=$((IDLE + INTERVAL_MIN))
+      echo "$IDLE" > "$STATE"
+
+      if [ "$IDLE" -ge "$IDLE_LIMIT" ]; then
+        echo 0 > "$STATE"
+        logger -t idle-shutdown "idle for $IDLE minutes, stopping instance"
+        systemctl poweroff
+      fi
+
+  - path: /etc/systemd/system/idle-shutdown.service
+    content: |
+      [Unit]
+      Description=Stop this instance when nobody is using it
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/sbin/idle-shutdown.sh
+
+  - path: /etc/systemd/system/idle-shutdown.timer
+    content: |
+      [Unit]
+      Description=Run the idle watchdog every five minutes
+
+      [Timer]
+      OnBootSec=15min
+      OnUnitActiveSec=5min
+      Persistent=true
+
+      [Install]
+      WantedBy=timers.target
+
+  # ---------------------------------------------------------------------
+  - path: /usr/local/sbin/bootstrap.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      # First boot provisioning beyond what cloud-config covers.
+      #
+      # Deliberately not `set -e`. A step that fails is logged and the rest
+      # still run, because a missing package is an inconvenience while a
+      # half-configured box you cannot reach is a locked door.
+      set -uo pipefail
+
+      REGION='${region}'
+      SSM_PREFIX='${ssm_prefix}'
+      LOG=/var/log/rhelvm-bootstrap.log
+      exec > >(tee -a "$LOG") 2>&1
+
+      FAILED=()
+
+      aws_cli() {
+        if command -v aws >/dev/null 2>&1; then aws "$@"; return $?; fi
+        if [ -x /usr/local/bin/aws ]; then /usr/local/bin/aws "$@"; return $?; fi
+        return 127
+      }
+
+      publish_status() {
+        aws_cli ssm put-parameter --name "$SSM_PREFIX/bootstrap-status" \
+          --type String --value "$1" --overwrite --region "$REGION" >/dev/null 2>&1 || true
+      }
+
+      step() {
+        local name="$1"; shift
+        echo ""
+        echo "=== $name ==="
+        publish_status "running:$name"
+        if "$@"; then
+          echo "--- $name ok"
+        else
+          echo "--- $name FAILED (exit $?)"
+          FAILED+=("$name")
+        fi
+      }
+
+      step_watchdog() {
+        systemctl daemon-reload
+        [ "${idle_shutdown_minutes}" -gt 0 ] || { echo 'idle shutdown disabled'; return 0; }
+        systemctl enable --now idle-shutdown.timer
+        # Enabling a timer and it actually being scheduled are different
+        # things. Prove the next run exists.
+        systemctl list-timers idle-shutdown.timer --no-pager | grep -q idle-shutdown
+      }
+
+      step_awscli() {
+        command -v aws >/dev/null 2>&1 && return 0
+        dnf install -y awscli2 || dnf install -y awscli || return 1
+        command -v aws >/dev/null 2>&1
+      }
+
+      step_baseline() {
+        dnf install -y git tar gzip unzip jq tmux vim-enhanced bash-completion
+      }
+
+      step_repo() {
+        rm -rf /opt/setup
+        git clone --depth 1 --branch '${setup_ref}' '${setup_repo_url}' /opt/setup || return 1
+        chown -R ec2-user:ec2-user /opt/setup
+        [ -x /opt/setup/bootstrap/setup.sh ] || chmod +x /opt/setup/bootstrap/setup.sh
+        /opt/setup/bootstrap/setup.sh
+      }
+
+      step 'idle-watchdog'  step_watchdog
+      step 'aws-cli'        step_awscli
+      step 'baseline-tools' step_baseline
+      step 'run-setup-from-repo' step_repo
+
+      if [ $${#FAILED[@]} -eq 0 ]; then
+        publish_status 'complete'
+        echo 'bootstrap complete'
+      else
+        joined=$(IFS=,; echo "$${FAILED[*]}")
+        publish_status "complete-with-failures:$joined"
+        echo "bootstrap finished with failed steps: $joined"
+      fi
+
+runcmd:
+  - /usr/local/sbin/bootstrap.sh
