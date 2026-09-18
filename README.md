@@ -123,6 +123,25 @@ rhel_version = "9.8"
 
 무엇이 잡혔는지는 `ami_name` 출력으로 확인한다.
 
+### 두 번째 기기에서 쓰기
+
+기기가 둘이면 두 가지가 걸린다. 상태 파일과 SSH 키다.
+
+상태는 [`terraform/backend.tf.example`](terraform/backend.tf.example) 대로 S3 로 옮긴다.
+옮기지 않고 다른 기기에서 `apply` 를 돌리면 기존 스택을 못 보고 VPC 와 인스턴스를 통째로 새로 만든다.
+
+SSH 키는 개인키를 복사하지 않는다.
+그 기기의 **공개키**를 `extra_ssh_public_keys` 에 넣는다.
+
+```hcl
+extra_ssh_public_keys = [
+  "ssh-ed25519 AAAA...  # macmini",
+]
+```
+
+`user_data` 는 첫 부팅에만 도므로 이미 떠 있는 인스턴스에는 반영되지 않는다.
+돌고 있는 박스에는 `authorized_keys` 에 직접 한 줄 붙이고, 이 설정은 다음 재생성부터 듣는다.
+
 ## 매일 쓰기
 
 ```sh

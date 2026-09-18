@@ -47,6 +47,17 @@ variable "root_volume_size" {
   }
 }
 
+variable "extra_ssh_public_keys" {
+  description = "Additional OpenSSH public keys authorised for ec2-user. One machine per entry, so a second workstation can reach the box without copying a private key around."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for k in var.extra_ssh_public_keys : can(regex("^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) ", k))])
+    error_message = "Every entry must be an OpenSSH public key line."
+  }
+}
+
 variable "ssh_public_key" {
   description = "OpenSSH public key authorised for the ec2-user account. Paste the contents of a .pub file."
   type        = string

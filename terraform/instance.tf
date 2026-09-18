@@ -43,6 +43,7 @@ resource "aws_instance" "this" {
 
   user_data = templatefile("${path.module}/../bootstrap/cloud-init.yaml.tftpl", {
     ssh_public_key        = trimspace(var.ssh_public_key)
+    extra_ssh_public_keys = [for k in var.extra_ssh_public_keys : trimspace(k)]
     region                = var.region
     ssm_prefix            = local.ssm_prefix
     idle_shutdown_minutes = var.idle_shutdown_minutes
